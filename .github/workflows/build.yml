@@ -1,0 +1,74 @@
+name: SonarQube
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [opened, synchronize, reopened]
+jobs:
+  build:
+    name: Build and analyze
+    runs-on: windows-latest
+    steps:
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: 17
+          distribution: 'zulu' # Alternative distribution options are available.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Shallow clones should be disabled for a better relevancy of analysis 
+      - name: Setup NuGet
+        uses: nuget/setup-nuget@v1
+        with:
+          nuget-version: 'latest'
+      
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v1.3.1
+
+      - name: Restore NuGet packages
+        run: nuget restore sonarcloud_csharp_netframework.sln
+
+      - name: Cache SonarQube Cloud packages
+        uses: actions/cache@v4
+        with:
+          path: ~\sonar\cache
+          key: ${{ runner.os }}-sonar
+          restore-keys: ${{ runner.os }}-sonar
+      - name: Cache SonarQube Cloud scanner
+        id: cache-sonar-scanner
+        uses: actions/cache@v4
+        with:
+          path: .\.sonar\scanner
+          key: ${{ runner.os }}-sonar-scanner
+          restore-keys: ${{ runner.os }}-sonar-scanner
+      - name: Install SonarQube Cloud scanner
+        if: steps.cache-sonar-scanner.outputs.cache-hit != 'true'
+        shell: powershell
+        run: |
+          New-Item -Path .\.sonar\scanner -ItemType Directory
+          dotnet tool update dotnet-sonarscanner --tool-path .\.sonar\scanner
+      - name: Build and analyze
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Needed to get PR information, if any
+        shell: powershell
+        run: |
+          # SONAR BEGIN
+          .\.sonar\scanner\dotnet-sonarscanner begin /k:"nguyen365-org_sonarcloud_csharp_netframework" /o:"nguyen365-org" /d:sonar.token="${{ secrets.SONAR_TOKEN }}" /d:sonar.host.url="https://sonarcloud.io" /d:sonar.cs.opencover.reportsPaths=coverage.xml
+          
+          # Build project
+          msbuild.exe sonarcloud_csharp_netframework.sln /nologo /nr:false /p:platform="Any CPU" /p:configuration="Release"
+          
+          # Define paths to OpenCover and ReportGenerator executables, # Replace {version} with the actual version number or use a script to dynamically find it
+          $openCoverPath = ".\packages\OpenCover.4.7.1221\tools\OpenCover.Console.exe"
+          $reportGeneratorPath = ".\packages\ReportGenerator.5.2.2\tools\net47\ReportGenerator.exe"
+          
+          # Run OpenCover
+          & $openCoverPath -target:"vstest.console.exe" -targetargs:"WebApplicationNetFramework.Tests\bin\Release\WebApplicationNetFramework.Tests.dll" -filter:"+[WebApplicationNetFramework*]* -[*.Tests]*" -register:user -excludebyattribute:*.ExcludeFromCodeCoverage* -output:coverage.xml
+          
+          # Convert coverage report with ReportGenerator
+          & $reportGeneratorPath "-reports:coverage.xml" "-targetdir:coveragereport" -reporttypes:Cobertura
+          
+          # SONAR BEGIN
+          .\.sonar\scanner\dotnet-sonarscanner end /d:sonar.token="${{ secrets.SONAR_TOKEN }}"
